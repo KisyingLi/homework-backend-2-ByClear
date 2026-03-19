@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import com.example.demo.entity.ActivityMaster;
 import com.example.demo.entity.User;
 import com.example.demo.repository.ActivityMasterRepository;
@@ -22,6 +24,7 @@ import lombok.RequiredArgsConstructor;
 @RestController
 @RequestMapping("/api")
 @RequiredArgsConstructor
+@Tag(name = "任務系統", description = "提供任務進度查詢與獎勵領取相關 API")
 public class MissionController {
 
 	private final StringRedisTemplate redisTemplate;
@@ -31,6 +34,7 @@ public class MissionController {
 	private final AuthService authService;
 
 	@GetMapping("/missions")
+	@Operation(summary = "查詢任務進度", description = "根據用戶註冊時間計算 30 天期限，並從資料庫與 Redis 動態獲取各項任務完成狀態")
 	public ResponseEntity<?> getMissions(@RequestHeader(value = "Authorization", required = false) String token) {
 		Long userId = authService.getUserIdFromToken(token);
 		if (userId == null) {

@@ -174,6 +174,12 @@ class MissionServiceTest {
 
     @Test
     void checkAllMissionsAndReward_ShouldReturnEarly_WhenAlreadyClaimedInDb() {
+    	/*
+    	 *  防重領測試
+    	 *	目的：驗證數據庫作為「最終真相 (Source of Truth)」的可靠性。
+    	 *	情境：即使 Redis 當中沒有領獎紀錄（模擬 Redis 資料遺失或被惡意清空），但只要 reward_records 表中已有該用戶對應活動的紀錄。
+    	 *	驗證點：系統應在第一時間偵測到並直接返回 (Return Early)，不應再次呼叫 userRepository.save() 來更新分數。這能從根本上杜絕重複領獎的問題。
+    	 */
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
         when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L))
                 .thenReturn(Optional.of(new RewardRecord()));

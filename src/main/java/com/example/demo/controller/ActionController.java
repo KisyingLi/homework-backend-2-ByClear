@@ -13,6 +13,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import com.example.demo.dto.LaunchGameRequest;
 import com.example.demo.dto.LoginRequest;
 import com.example.demo.dto.PlayGameRequest;
@@ -33,6 +35,7 @@ import lombok.extern.slf4j.Slf4j;
 @RequestMapping("/api")
 @RequiredArgsConstructor
 @Slf4j
+@Tag(name = "行為控制", description = "處理用戶登入、啟動遊戲與遊玩行為的相關 API，並發送非同步 MQ 事件")
 public class ActionController {
 
 	private final UserRepository userRepository;
@@ -44,6 +47,7 @@ public class ActionController {
 
 	@PostMapping("/login")
 	@Transactional
+	@Operation(summary = "用戶登入/註冊", description = "模擬用戶登入。若用戶不存在則自動建立，成功後發送 LOGIN 事件並回傳 Token")
 	public ResponseEntity<?> login(@RequestBody LoginRequest request) {
 		String username = request.username();
 		if (username == null || username.trim().isEmpty()) {
@@ -74,6 +78,7 @@ public class ActionController {
 
 	@PostMapping("/launchGame")
 	@Transactional
+	@Operation(summary = "啟動遊戲", description = "需攜帶 Token。驗證遊戲存在後發送 LAUNCH 事件，並回傳用於遊玩的 playToken")
 	public ResponseEntity<?> launchGame(@RequestHeader(value = "Authorization", required = false) String token,
 			@RequestBody LaunchGameRequest request) {
 		Long userId = authService.getUserIdFromToken(token);
@@ -107,6 +112,7 @@ public class ActionController {
 
 	@PostMapping("/play")
 	@Transactional
+	@Operation(summary = "紀錄遊玩結果", description = "需攜帶 Token 與 PlayToken。驗證 Token 擁有者一致後，隨機產生積分並發送 PLAY 事件")
 	public ResponseEntity<?> play(@RequestHeader(value = "Authorization", required = false) String token,
 			@RequestBody PlayGameRequest request) {
 		Long authUserId = authService.getUserIdFromToken(token);
