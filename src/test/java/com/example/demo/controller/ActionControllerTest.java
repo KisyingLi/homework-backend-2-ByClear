@@ -78,6 +78,14 @@ class ActionControllerTest {
 
     @Test
     void login_ShouldCreateUserAndReturnToken_WhenUserDoesNotExist() throws Exception {
+        /*
+         *  New user registration test
+         *  Purpose: Verify that a brand-new user is automatically registered on first login.
+         *  Scenario: userCacheService returns empty (user not found in cache or DB).
+         *  Verify: userRepository.save() is called once to create the new account,
+         *          response returns 200 with userId and token,
+         *          and a UserLoginEvent is sent via RocketMQ.
+         */
         LoginRequest request = new LoginRequest("testuser");
         
         when(userCacheService.getByUsername("testuser")).thenReturn(Optional.empty());
@@ -98,6 +106,13 @@ class ActionControllerTest {
 
     @Test
     void launchGame_ShouldReturnPlayToken_WhenTokenIsValid() throws Exception {
+        /*
+         *  Normal game launch test
+         *  Purpose: Verify that a valid token and existing game ID returns a playToken.
+         *  Scenario: Token is valid (authService returns userId = 1), game ID 1 exists.
+         *  Verify: Response returns 200 with a playToken,
+         *          and a GameLaunchEvent is sent via RocketMQ.
+         */
         String token = UUID.randomUUID().toString();
         LaunchGameRequest request = new LaunchGameRequest(1L);
 
@@ -117,6 +132,14 @@ class ActionControllerTest {
 
     @Test
     void play_ShouldReturnScore_WhenSessionIsValid() throws Exception {
+        /*
+         *  Normal play session test
+         *  Purpose: Verify that a valid playToken results in a score being recorded.
+         *  Scenario: Token is valid, Redis contains the play session (userId:gameId = "1:1").
+         *  Verify: Response returns 200 with a score,
+         *          gamePlayRecordRepository.save() is called to persist the result,
+         *          and a GamePlayEvent is sent via RocketMQ.
+         */
         String token = "auth-token";
         String playToken = "play-token";
         PlayGameRequest request = new PlayGameRequest(playToken);
@@ -138,6 +161,13 @@ class ActionControllerTest {
 
     @Test
     void play_ShouldReturnForbidden_WhenSessionOwnerMismatch() throws Exception {
+        /*
+         *  Session hijack prevention test
+         *  Purpose: Verify that a user cannot use another user's playToken.
+         *  Scenario: Attacker (userId = 2) tries to submit a play result using a playToken
+         *            that belongs to victim (userId = 1), Redis shows "1:1" as the session owner.
+         *  Verify: Response status is 403 Forbidden, preventing unauthorized score submission.
+         */
         String token = "attacker-token";
         String playToken = "victim-play-token";
         PlayGameRequest request = new PlayGameRequest(playToken);
