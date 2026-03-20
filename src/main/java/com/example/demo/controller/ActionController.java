@@ -7,7 +7,7 @@ import java.util.UUID;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseEntity;
-import org.springframework.transaction.annotation.Transactional;
+
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -49,7 +49,6 @@ public class ActionController {
 	private final UserCacheService userCacheService;
 
 	@PostMapping("/login")
-	@Transactional
 	@Operation(summary = "User Login/Registration", description = "Simulates user login. Automatically creates a user if they don't exist, sends a LOGIN event upon success, and returns a token")
 	public ResponseEntity<?> login(@RequestBody LoginRequest request) {
 		String username = request.username();
@@ -82,7 +81,6 @@ public class ActionController {
 	}
 
 	@PostMapping("/launchGame")
-	@Transactional
 	@Operation(summary = "Launch Game", description = "Requires Token. Verifies game existence, sends a LAUNCH event, and returns a playToken for gaming")
 	public ResponseEntity<?> launchGame(@RequestHeader(value = "Authorization", required = false) String token,
 			@RequestBody LaunchGameRequest request) {
@@ -116,7 +114,6 @@ public class ActionController {
 	}
 
 	@PostMapping("/play")
-	@Transactional
 	@Operation(summary = "Record Play Results", description = "Requires Token and PlayToken. Verifies token ownership, randomly generates score, and sends a PLAY event")
 	public ResponseEntity<?> play(@RequestHeader(value = "Authorization", required = false) String token,
 			@RequestBody PlayGameRequest request) {

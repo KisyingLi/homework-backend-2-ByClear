@@ -175,21 +175,16 @@ public class MissionService {
 	public void checkAllMissionsAndReward(Long userId, ActivityKey activityKey) {
 		String key = "mission:user:" + userId;
 
-		// 1. Check reward record in database first
-		// Safety check: skip L1 cache and go to Redis/DB directly
+		// 1. Get activity config (Redis cache first, DB fallback)
 		ActivityMasterModel activity = getActivityConfigByRedis(activityKey.getKey());
-		if (rewardRecordRepository.findByUserIdAndActivityId(userId, activity.getId()).isPresent()) {
-			return;
-		}
 
-		// 2. Check Redis cache (as first layer filtering)
+		// 2. Redis fast-path guard: check reward_claimed flag BEFORE hitting DB
 		String claimed = (String) redisTemplate.opsForHash().get(key, "reward_claimed");
 		if ("1".equals(claimed)) {
 			return;
 		}
 
-		// Fetch all progress
-		var missions = activity.getMissions();
+		// 3. Fetch all progress from Redis (before DB connection is acquired)
 		String loginDaysStr = (String) redisTemplate.opsForHash().get(key, "login_days");
 		int loginDays = loginDaysStr != null ? Integer.parseInt(loginDaysStr) : 0;
 
@@ -203,7 +198,8 @@ public class MissionService {
 		String totalScoreStr = (String) redisTemplate.opsForHash().get(key, "total_score");
 		int totalScore = totalScoreStr != null ? Integer.parseInt(totalScoreStr) : 0;
 
-		// 3. Dynamically determine if targets are met
+		// 4. Dynamically determine if all targets are met
+		var missions = activity.getMissions();
 		boolean allDone = true;
 		for (var m : missions) {
 			boolean currentDone = false;
@@ -218,21 +214,29 @@ public class MissionService {
 			}
 		}
 
-		if (allDone) {
-			log.info("User {} completed ALL MISSIONS! Awarding {} points.", userId, activity.getTotalReward());
+		// Early return: no DB access needed if missions are not done
+		if (!allDone) return;
 
-			// 4. Update user points
-			UserModel user = userRepository.findById(userId).orElseThrow();
-			updateUserPoints(user, activity.getTotalReward());
-
-			// 5. Write reward record (persistence)
-			RewardRecordModel record = RewardRecordModel.builder().userId(userId)
-					.activityId(activity.getId()).rewardPoints(activity.getTotalReward()).build();
-			rewardRecordRepository.save(record);
-
-			// 6. Update Redis flag
-			redisTemplate.opsForHash().put(key, "reward_claimed", "1");
+		// 5. DB safety check (Source of Truth) - only reached when allDone = true
+		if (rewardRecordRepository.findByUserIdAndActivityId(userId, activity.getId()).isPresent()) {
+			return;
 		}
+
+		// 6. DB writes (connection acquired here, minimizing hold time)
+		log.info("User {} completed ALL MISSIONS! Awarding {} points.", userId, activity.getTotalReward());
+
+		UserModel user = userRepository.findById(userId).orElseThrow();
+		updateUserPoints(user, activity.getTotalReward());
+
+		RewardRecordModel record = RewardRecordModel.builder()
+				.userId(userId)
+				.activityId(activity.getId())
+				.rewardPoints(activity.getTotalReward())
+				.build();
+		rewardRecordRepository.save(record);
+
+		// 7. Mark Redis reward flag after DB writes succeed
+		redisTemplate.opsForHash().put(key, "reward_claimed", "1");
 	}
 	// Update user points and evict cache
 	@Transactional

@@ -1,5 +1,6 @@
 package com.example.demo.service;
 
+import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
@@ -43,15 +44,15 @@ public class UserCacheService {
 	/**
 	 * Get user by username with cache
 	 */
-	public java.util.Optional<UserModel> getByUsername(String username) {
+	public Optional<UserModel> getByUsername(String username) {
 		String nameKey = CACHE_USERNAME_PREFIX + username;
 		String userIdStr = redisTemplate.opsForValue().get(nameKey);
 
 		if (userIdStr != null) {
-			return java.util.Optional.of(getUser(Long.parseLong(userIdStr)));
+			return Optional.of(getUser(Long.parseLong(userIdStr)));
 		}
 
-		java.util.Optional<UserModel> userOpt = userRepository.findByUsername(username);
+		Optional<UserModel> userOpt = userRepository.findByUsername(username);
 		userOpt.ifPresent(this::cacheUserObject);
 		return userOpt;
 	}

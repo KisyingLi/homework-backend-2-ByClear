@@ -119,7 +119,6 @@ class MissionServiceTest {
 		when(hashOperations.get(anyString(), eq("last_login_date"))).thenReturn(null);
 		when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("0");
 		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-		when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
 		when(redisTemplate.opsForSet()).thenReturn(setOperations);
 		when(setOperations.size(anyString())).thenReturn(0L);
 		missionService.recordLogin(1L, LocalDate.now());
@@ -137,7 +136,6 @@ class MissionServiceTest {
 		when(redisTemplate.opsForSet()).thenReturn(setOperations);
 		// Mock requirements and reward check
 		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-		when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
 		when(redisTemplate.opsForHash()).thenReturn(hashOperations);
 		when(hashOperations.get(anyString(), anyString())).thenReturn(null);
 		when(userCacheService.getUser(1L)).thenReturn(testUser);
@@ -161,7 +159,6 @@ class MissionServiceTest {
 
 		// Mock requirements and reward check
 		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-		when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
 		when(hashOperations.get(anyString(), anyString())).thenReturn(null);
 		when(redisTemplate.opsForSet()).thenReturn(setOperations);
 
@@ -223,8 +220,10 @@ class MissionServiceTest {
     	 *	Verify: The system should detect this immediately and Return Early, NOT calling userRepository.save() again to update points. This fundamentally prevents duplicate claims.
     	 */
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L))
-                .thenReturn(Optional.of(new RewardRecordModel()));
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+        when(hashOperations.get(anyString(), eq("reward_claimed"))).thenReturn(null);
+        when(redisTemplate.opsForSet()).thenReturn(setOperations);
+        when(setOperations.size(anyString())).thenReturn(0L);
 
         missionService.checkAllMissionsAndReward(1L, ActivityKey.NEW_USER_MISSION);
 
@@ -250,7 +249,6 @@ class MissionServiceTest {
         when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("2");
 
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
 
         when(redisTemplate.opsForSet()).thenReturn(setOperations);
         when(setOperations.size(anyString())).thenReturn(0L);
@@ -300,7 +298,6 @@ class MissionServiceTest {
          *  Verify: No points are awarded and userRepository.save() is never called.
          */
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
         when(redisTemplate.opsForHash()).thenReturn(hashOperations);
         when(hashOperations.get(anyString(), eq("reward_claimed"))).thenReturn("1"); // Already claimed in Redis
 
@@ -318,7 +315,6 @@ class MissionServiceTest {
          *  Verify: No points are awarded and userRepository.save() is never called.
          */
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
         when(redisTemplate.opsForHash()).thenReturn(hashOperations);
         when(hashOperations.get(anyString(), eq("reward_claimed"))).thenReturn(null);
 
