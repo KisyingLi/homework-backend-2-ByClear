@@ -128,3 +128,90 @@ Please submit a `public Github repository` that includes:
 Good luck!
 
 ---
+
+## 🧪 API curl Samples
+
+### Step 1：登入 / 註冊
+
+```bash
+curl -X POST http://localhost:8080/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "player1"}'
+```
+
+回應範例：
+```json
+{
+  "message": "Login successful",
+  "userId": 1,
+  "username": "player1",
+  "token": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+---
+
+### Step 2：啟動遊戲（需要 token）
+
+```bash
+curl -X POST http://localhost:8080/api/launchGame \
+  -H "Content-Type: application/json" \
+  -H "Authorization: 550e8400-e29b-41d4-a716-446655440000" \
+  -d '{"gameId": 101}'
+```
+
+回應範例：
+```json
+{
+  "message": "Game launched successfully",
+  "playToken": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+---
+
+### Step 3：開始遊玩（需要 token + playToken）
+
+```bash
+curl -X POST http://localhost:8080/api/play \
+  -H "Content-Type: application/json" \
+  -H "Authorization: 550e8400-e29b-41d4-a716-446655440000" \
+  -d '{"playToken": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"}'
+```
+
+回應範例：
+```json
+{
+  "message": "Play recorded successfully",
+  "score": 350
+}
+```
+
+---
+
+### ⚠️ 錯誤情境測試
+
+```bash
+# Token 無效 → 401
+curl -X POST http://localhost:8080/api/launchGame \
+  -H "Content-Type: application/json" \
+  -H "Authorization: invalid-token" \
+  -d '{"gameId": 101}'
+
+# 遊戲不存在 → 400
+curl -X POST http://localhost:8080/api/launchGame \
+  -H "Content-Type: application/json" \
+  -H "Authorization: 550e8400-e29b-41d4-a716-446655440000" \
+  -d '{"gameId": 9999}'
+
+# playToken 過期 → 401
+curl -X POST http://localhost:8080/api/play \
+  -H "Content-Type: application/json" \
+  -H "Authorization: 550e8400-e29b-41d4-a716-446655440000" \
+  -d '{"playToken": "expired-or-fake-token"}'
+```
+
+> **注意**：`Authorization` header 的值就是登入後拿到的 `token` 字串，直接帶入即可，不需要加 `Bearer ` 前綴。
+
+
+

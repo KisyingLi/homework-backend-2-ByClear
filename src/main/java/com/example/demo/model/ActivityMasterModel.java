@@ -1,5 +1,6 @@
-package com.example.demo.entity;
+package com.example.demo.model;
 
+import com.fasterxml.jackson.annotation.JsonManagedReference;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UpdateTimestamp;
@@ -13,7 +14,7 @@ import java.util.List;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ActivityMaster {
+public class ActivityMasterModel {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -42,5 +43,6 @@ public class ActivityMaster {
     private LocalDateTime updatedAt;
 
     @OneToMany(mappedBy = "activityMaster", cascade = CascadeType.ALL, fetch = FetchType.EAGER)
-    private List<ActivityMission> missions;
+    @JsonManagedReference
+    private List<ActivityMissionModel> missions;
 }

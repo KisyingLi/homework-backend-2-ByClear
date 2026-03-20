@@ -1,4 +1,4 @@
-package com.example.demo.consumer;
+package com.example.demo.mq;
 
 import com.example.demo.event.GameLaunchEvent;
 import com.example.demo.service.MissionService;
@@ -26,7 +26,7 @@ public class LaunchEventConsumer implements RocketMQListener<GameLaunchEvent> {
 
     @Override
     public void onMessage(GameLaunchEvent event) {
-        log.info("MQ Consumer 接收到遊戲啟動事件！UserId={}, GameId={}", event.userId(), event.gameId());
+        log.info("MQ Consumer received game launch event! UserId={}, GameId={}", event.userId(), event.gameId());
         missionService.recordLaunch(event.userId(), event.gameId());
     }
 }

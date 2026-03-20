@@ -1,13 +1,18 @@
 package com.example.demo.service;
 
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.Optional;
 import java.util.List;
+import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -16,177 +21,317 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.HashOperations;
+import org.springframework.data.redis.core.SetOperations;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
-import org.springframework.data.redis.core.SetOperations;
 
-import com.example.demo.entity.ActivityMaster;
-import com.example.demo.entity.ActivityMission;
-import com.example.demo.entity.RewardRecord;
-import com.example.demo.entity.User;
+import com.example.demo.enums.ActivityKey;
+import com.example.demo.enums.MissionType;
+import com.example.demo.model.ActivityMasterModel;
+import com.example.demo.model.ActivityMissionModel;
+import com.example.demo.model.RewardRecordModel;
+import com.example.demo.model.UserModel;
 import com.example.demo.repository.ActivityMasterRepository;
 import com.example.demo.repository.RewardRecordRepository;
 import com.example.demo.repository.UserRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
 class MissionServiceTest {
 
-    @Mock
-    private StringRedisTemplate redisTemplate;
-    @Mock
-    private UserRepository userRepository;
-    @Mock
-    private ActivityMasterRepository activityMasterRepository;
-    @Mock
-    private RewardRecordRepository rewardRecordRepository;
+	@Mock
+	private StringRedisTemplate redisTemplate;
+	@Mock
+	private UserRepository userRepository;
+	@Mock
+	private ActivityMasterRepository activityMasterRepository;
+	@Mock
+	private RewardRecordRepository rewardRecordRepository;
+	@Mock
+	private ObjectMapper objectMapper;
+	@Mock
+	private UserCacheService userCacheService;
 
-    @Mock
-    private ValueOperations<String, String> valueOperations;
-    @Mock
-    private HashOperations<String, Object, Object> hashOperations;
-    @Mock
-    private SetOperations<String, String> setOperations;
+	@Mock
+	private ValueOperations<String, String> valueOperations;
+	@Mock
+	private HashOperations<String, Object, Object> hashOperations;
+	@Mock
+	private SetOperations<String, String> setOperations;
 
-    @InjectMocks
-    private MissionService missionService;
+	@InjectMocks
+	private MissionService missionService;
 
-    private User testUser;
-    private ActivityMaster testActivity;
+	private UserModel testUser;
+	private ActivityMasterModel testActivity;
 
-    @BeforeEach
-    void setUp() {
-        testUser = User.builder()
-                .id(1L)
-                .username("test_user")
-                .totalPoints(0)
-                .createdAt(LocalDateTime.now().minusDays(10)) // 10天前註冊
-                .build();
+	@BeforeEach
+	void setUp() {
+		when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+		testUser = UserModel.builder().id(1L).username("test_user").totalPoints(0)
+				.createdAt(LocalDateTime.now().minusDays(10)) // 10天前註冊
+				.build();
 
-        ActivityMission m1 = ActivityMission.builder().id(1L).missionOrder(1).missionName("M1").targetCount(3).build();
-        
-        testActivity = ActivityMaster.builder()
-                .id(1L)
-                .activityKey("NEW_USER_MISSION")
-                .activityName("New User Activity")
-                .daysLimit(30)
-                .totalReward(100)
-                .missions(List.of(m1))
-                .build();
-    }
+		ActivityMissionModel m1 = ActivityMissionModel.builder().id(1L).missionType(MissionType.LOGIN).missionName("M1")
+				.targetCount(3).build();
 
-    @Test
-    void recordLogin_ShouldNotRecord_WhenExpired() {
+		testActivity = ActivityMasterModel.builder().id(1L).activityKey("NEW_USER_MISSION")
+				.activityName("New User Activity").daysLimit(30).totalReward(100).missions(List.of(m1)).build();
+	}
+
+	@Test
+	void recordLogin_ShouldNotRecord_WhenExpired() {
+		/*
+		 * Expiration intercept test Purpose: Verify that the "30-day limit" is actually
+		 * working. Scenario: Simulate a user who registered 31 days ago. Verify: When
+		 * calling recordLogin, the system should recognize the user has expired and NOT
+		 * perform any Redis write operations (verify(redisTemplate,
+		 * never()).opsForHash()). This ensures expired users can no longer accumulate
+		 * progress.
+		 */
+		// Mock user as expired (31 days ago)
+		testUser.setCreatedAt(LocalDateTime.now().minusDays(31));
+
+		when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+		when(valueOperations.get(anyString())).thenReturn(null);
+		when(userCacheService.getUser(1L)).thenReturn(testUser);
+		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+
+		missionService.recordLogin(1L, LocalDate.now());
+
+		// Verify hash operations (recording logic) were NEVER called
+		verify(redisTemplate, never()).opsForHash();
+	}
+
+	@Test
+	void recordLogin_ShouldRecord_WhenNotExpired() {
+		/*
+		 * Progress accumulation test Purpose: Verify normal progress accumulation.
+		 * Scenario: Simulate a user who registered 10 days ago and has no login record
+		 * in Redis. Verify: The system should normally write the new login days to
+		 * Redis (login_days = 1). Confirm that opsForSet().size() is mocked to avoid
+		 * NPE during mission completion check.
+		 */
+		// Mock expiry check
+		when(valueOperations.get("mission:user:1:expired")).thenReturn("false");
+		when(valueOperations.get("config:activity:NEW_USER_MISSION")).thenReturn(null);
+		when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+		when(hashOperations.get(anyString(), eq("last_login_date"))).thenReturn(null);
+		when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("0");
+		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+		when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
+		when(redisTemplate.opsForSet()).thenReturn(setOperations);
+		when(setOperations.size(anyString())).thenReturn(0L);
+		missionService.recordLogin(1L, LocalDate.now());
+		verify(hashOperations).put(anyString(), eq("login_days"), eq("1"));
+	}
+
+	@Test
+	void recordLaunch_ShouldRecordDistinctGames() {
+		/*
+		 * Distinct game launch test Purpose: Verify that launching a game is correctly
+		 * recorded in a Redis Set. Verify: The system should call opsForSet().add() and
+		 * then check all missions.
+		 */
+		when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+		when(redisTemplate.opsForSet()).thenReturn(setOperations);
+		// Mock requirements and reward check
+		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+		when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
+		when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+		when(hashOperations.get(anyString(), anyString())).thenReturn(null);
+		when(userCacheService.getUser(1L)).thenReturn(testUser);
+
+		missionService.recordLaunch(1L, 101L);
+
+		verify(setOperations).add(anyString(), eq("101"));
+		verify(setOperations, times(2)).size(anyString());
+	}
+
+	@Test
+	void recordPlay_ShouldAccumulateSessionsAndScore() {
+		/*
+		 * Play accumulation test Purpose: Verify that play sessions and scores are
+		 * incremented in Redis. Verify: The system should call opsForHash().increment()
+		 * for both play_sessions and total_score.
+		 */
+		when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+		when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+		when(valueOperations.get("mission:user:1:expired")).thenReturn("false");
+
+		// Mock requirements and reward check
+		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+		when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
+		when(hashOperations.get(anyString(), anyString())).thenReturn(null);
+		when(redisTemplate.opsForSet()).thenReturn(setOperations);
+
+		missionService.recordPlay(1L, 101L, 500);
+
+		verify(hashOperations).increment(anyString(), eq("play_sessions"), eq(1L));
+		verify(hashOperations).increment(anyString(), eq("total_score"), eq(500L));
+	}
+
+	@Test
+	void checkAllMissionsAndReward_ShouldAwardPoints_WhenMissionsDone() {
+		/*
+		 * Reward and persistence test Purpose: This is the most critical test,
+		 * verifying dynamic target judgment and reward persistence. Scenario: 1. Fetch
+		 * mission requirements from ActivityMaster (e.g., 3 days of login required). 2.
+		 * Simulate that Redis progress has met the target (login_days = 3). 3. Simulate
+		 * that both DB and Redis show "not claimed". Verify: Point Update: The user's
+		 * totalPoints should increase by 100. DB Persistence:
+		 * rewardRecordRepository.save() must be called to write to the record table
+		 * (most important step). Redis Sync: Redis reward flag should be set to "1".
+		 */
+		// Mocking requirements
+		when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+		when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
+		when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+		when(hashOperations.get(anyString(), eq("reward_claimed"))).thenReturn(null);
+
+		// Mock opsForSet to avoid NPE
+		when(redisTemplate.opsForSet()).thenReturn(setOperations);
+		when(setOperations.size(anyString())).thenReturn(0L);
+
+		// Mock progress: login_days = 3 (target is 3)
+		when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("3");
+		when(hashOperations.get(anyString(), eq("play_sessions"))).thenReturn("0");
+		when(hashOperations.get(anyString(), eq("total_score"))).thenReturn("0");
+
+		when(userRepository.findById(1L)).thenReturn(Optional.of(testUser));
+
+		missionService.checkAllMissionsAndReward(1L, ActivityKey.NEW_USER_MISSION);
+
+		// Verify user points updated
+		assertThat(testUser.getTotalPoints()).isEqualTo(100);
+		verify(userRepository).save(testUser);
+		verify(userCacheService).evictUser(1L);
+
+		// Verify reward record persisted
+		verify(rewardRecordRepository).save(any(RewardRecordModel.class));
+
+		// Verify Redis marked
+		verify(hashOperations).put(anyString(), eq("reward_claimed"), eq("1"));
+	}
+
+	    @Test
+    void checkAllMissionsAndReward_ShouldReturnEarly_WhenAlreadyClaimedInDb() {
     	/*
-    	 *  過期攔截測試
-    	 *	目的：驗證「30 天期限」是否真的有在起作用。
-    	 *	情境：模擬一個註冊於 31 天前的用戶。
-    	 *	驗證點：當呼叫 recordLogin時，系統應能識別用戶已過期，並完全不執行 Redis 的寫入動作 (verify(redisTemplate, never()).opsForHash())。
-    	 	這保證了過期用戶無法再累積進度。
+    	 *  Double-claim prevention test
+    	 *	Purpose: Verify the reliability of the database as the "Source of Truth".
+    	 *	Scenario: Even if there's no reward record in Redis (simulating data loss or malicious clear), as long as there's a record for the user in the reward_records table.
+    	 *	Verify: The system should detect this immediately and Return Early, NOT calling userRepository.save() again to update points. This fundamentally prevents duplicate claims.
     	 */
-        // Mock user as expired (31 days ago)
-        testUser.setCreatedAt(LocalDateTime.now().minusDays(31));
-        
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get(anyString())).thenReturn(null);
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testUser));
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L))
+                .thenReturn(Optional.of(new RewardRecordModel()));
 
-        missionService.recordLogin(1L, LocalDate.now());
+        missionService.checkAllMissionsAndReward(1L, ActivityKey.NEW_USER_MISSION);
 
-        // Verify hash operations (recording logic) were NEVER called
-        verify(redisTemplate, never()).opsForHash();
+        // Verify points were NOT awarded
+        verify(userRepository, never()).save(any(UserModel.class));
     }
 
     @Test
-    void recordLogin_ShouldRecord_WhenNotExpired() {
-    	/*
-    	 *  過期攔截測試
-    	 *	目的：驗證正常狀態下的進度累積。
-    	 *	情境：模擬註冊 10 天的用戶，且 Redis 中尚未有登入紀錄。
-    	 *	驗證點：系統應該正常向 Redis 寫入新的登入天數 (login_days = 1)。
-    	 	確認 Mock 了 opsForSet().size() 以避免在檢查任務達標時出現空指標異常。
-    	 */
-        // Mock expiry check
+    void recordLogin_ShouldNotDuplicate_WhenSameDayLogin() {
+        /*
+         *  Same-day login duplicate prevention test
+         *  Purpose: Verify that logging in twice on the same day does NOT increment login_days.
+         *  Scenario: User already logged in today (last_login_date = today, login_days = 2).
+         *  Verify: login_days should remain 2, not become 3.
+         */
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get(anyString())).thenReturn("false"); // Mock cached not expired
-        
-        // Mock progress recording
-        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
-        when(hashOperations.get(anyString(), eq("last_login_date"))).thenReturn(null);
-        when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("0");
+        when(valueOperations.get("mission:user:1:expired")).thenReturn("false");
+        when(valueOperations.get("config:activity:NEW_USER_MISSION")).thenReturn(null);
 
-        // Mock checkReward logic part
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+        when(hashOperations.get(anyString(), eq("last_login_date")))
+                .thenReturn(LocalDate.now().toString()); // Already logged in today
+        when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("2");
+
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
         when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
-        
-        // Fix NPE by mocking opsForSet().size()
+
         when(redisTemplate.opsForSet()).thenReturn(setOperations);
         when(setOperations.size(anyString())).thenReturn(0L);
 
         missionService.recordLogin(1L, LocalDate.now());
 
+        // login_days should stay at 2, not increase
+        verify(hashOperations).put(anyString(), eq("login_days"), eq("2"));
+    }
+
+    @Test
+    void recordLogin_ShouldReset_WhenLoginGapMoreThanOneDay() {
+        /*
+         *  Login streak reset test
+         *  Purpose: Verify that a login gap of more than 1 day resets the consecutive day count.
+         *  Scenario: User last logged in 3 days ago (login_days = 5), logs in today.
+         *  Verify: login_days should reset to 1.
+         */
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get("mission:user:1:expired")).thenReturn("false");
+        when(valueOperations.get("config:activity:NEW_USER_MISSION")).thenReturn(null);
+
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+        when(hashOperations.get(anyString(), eq("last_login_date")))
+                .thenReturn(LocalDate.now().minusDays(3).toString()); // Last login 3 days ago
+        when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("5");
+
+        when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
+
+        when(redisTemplate.opsForSet()).thenReturn(setOperations);
+        when(setOperations.size(anyString())).thenReturn(0L);
+        when(userRepository.findById(1L)).thenReturn(Optional.of(testUser));
+
+        missionService.recordLogin(1L, LocalDate.now());
+
+        // login_days should reset to 1
         verify(hashOperations).put(anyString(), eq("login_days"), eq("1"));
     }
 
     @Test
-    void checkAllMissionsAndReward_ShouldAwardPoints_WhenMissionsDone() {
-    	/*
-    	 *  發獎與持久化測試
-    	 *	目的：這是最關鍵的測試，驗證動態達標判斷與領獎持久化。
-    	 *	情境：
-    	 	1. 從 ActivityMaster 抓取任務要求（例如：登入需 3 天）。
-			2. 模擬 Redis 中的進度已達標（login_days = 3）。
-			3. 模擬資料庫與 Redis 均顯示「尚未領獎」。
-    	 *	驗證點：
-			分數更新：用戶的 totalPoints 應增加 100 分。
-			資料庫持久化：必須呼叫 rewardRecordRepository.save() 寫入紀錄表（最重要的一步）。
-			Redis 同步：Redis 的領標標記應設為 "1"。
-    	 */
-        // Mocking requirements
+    void checkAllMissionsAndReward_ShouldNotAward_WhenRedisAlreadyClaimed() {
+        /*
+         *  Redis fast-filter test
+         *  Purpose: Verify that the Redis reward_claimed flag acts as a fast-return guard.
+         *  Scenario: DB has no record, but Redis already shows reward_claimed = "1".
+         *  Verify: No points are awarded and userRepository.save() is never called.
+         */
+        when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
+        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
+        when(redisTemplate.opsForHash()).thenReturn(hashOperations);
+        when(hashOperations.get(anyString(), eq("reward_claimed"))).thenReturn("1"); // Already claimed in Redis
+
+        missionService.checkAllMissionsAndReward(1L, ActivityKey.NEW_USER_MISSION);
+
+        verify(userRepository, never()).save(any(UserModel.class));
+    }
+
+    @Test
+    void checkAllMissionsAndReward_ShouldNotAward_WhenMissionsNotDone() {
+        /*
+         *  Insufficient progress test
+         *  Purpose: Verify that rewards are NOT given when mission targets are not met.
+         *  Scenario: login_days = 1, but target is 3. All other missions also incomplete.
+         *  Verify: No points are awarded and userRepository.save() is never called.
+         */
         when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
         when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L)).thenReturn(Optional.empty());
         when(redisTemplate.opsForHash()).thenReturn(hashOperations);
         when(hashOperations.get(anyString(), eq("reward_claimed"))).thenReturn(null);
-        
-        // Mock opsForSet to avoid NPE
-        when(redisTemplate.opsForSet()).thenReturn(setOperations);
-        when(setOperations.size(anyString())).thenReturn(0L);
-        
-        // Mock progress: login_days = 3 (target is 3)
-        when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("3");
+
+        // Progress not met: login_days = 1, target = 3
+        when(hashOperations.get(anyString(), eq("login_days"))).thenReturn("1");
         when(hashOperations.get(anyString(), eq("play_sessions"))).thenReturn("0");
         when(hashOperations.get(anyString(), eq("total_score"))).thenReturn("0");
-        
-        when(userRepository.findById(1L)).thenReturn(Optional.of(testUser));
 
-        missionService.checkAllMissionsAndReward(1L);
+        when(redisTemplate.opsForSet()).thenReturn(setOperations);
+        when(setOperations.size(anyString())).thenReturn(0L);
 
-        // Verify user points updated
-        assertThat(testUser.getTotalPoints()).isEqualTo(100);
-        verify(userRepository).save(testUser);
-        
-        // Verify reward record persisted
-        verify(rewardRecordRepository).save(any(RewardRecord.class));
-        
-        // Verify Redis marked
-        verify(hashOperations).put(anyString(), eq("reward_claimed"), eq("1"));
-    }
+        missionService.checkAllMissionsAndReward(1L, ActivityKey.NEW_USER_MISSION);
 
-    @Test
-    void checkAllMissionsAndReward_ShouldReturnEarly_WhenAlreadyClaimedInDb() {
-    	/*
-    	 *  防重領測試
-    	 *	目的：驗證數據庫作為「最終真相 (Source of Truth)」的可靠性。
-    	 *	情境：即使 Redis 當中沒有領獎紀錄（模擬 Redis 資料遺失或被惡意清空），但只要 reward_records 表中已有該用戶對應活動的紀錄。
-    	 *	驗證點：系統應在第一時間偵測到並直接返回 (Return Early)，不應再次呼叫 userRepository.save() 來更新分數。這能從根本上杜絕重複領獎的問題。
-    	 */
-        when(activityMasterRepository.findByActivityKey("NEW_USER_MISSION")).thenReturn(Optional.of(testActivity));
-        when(rewardRecordRepository.findByUserIdAndActivityId(1L, 1L))
-                .thenReturn(Optional.of(new RewardRecord()));
-
-        missionService.checkAllMissionsAndReward(1L);
-
-        // Verify points were NOT awarded
-        verify(userRepository, never()).save(any(User.class));
+        verify(userRepository, never()).save(any(UserModel.class));
     }
 }

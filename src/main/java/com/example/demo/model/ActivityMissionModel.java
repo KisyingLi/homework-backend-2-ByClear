@@ -1,5 +1,7 @@
-package com.example.demo.entity;
+package com.example.demo.model;
 
+import com.example.demo.enums.MissionType;
+import com.fasterxml.jackson.annotation.JsonBackReference;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -9,7 +11,7 @@ import lombok.*;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class ActivityMission {
+public class ActivityMissionModel {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -18,10 +20,12 @@ public class ActivityMission {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "activity_id", nullable = false)
     @ToString.Exclude
-    private ActivityMaster activityMaster;
+    @JsonBackReference
+    private ActivityMasterModel activityMaster;
 
-    @Column(name = "mission_order", nullable = false)
-    private Integer missionOrder;
+    @Enumerated(EnumType.STRING)
+    @Column(name = "mission_type", nullable = false)
+    private MissionType missionType;
 
     @Column(name = "mission_name", nullable = false, length = 100)
     private String missionName;

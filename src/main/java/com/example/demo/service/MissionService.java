@@ -1,19 +1,28 @@
 package com.example.demo.service;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.example.demo.entity.ActivityMaster;
-import com.example.demo.entity.User;
+import com.example.demo.config.RedisPubSubConfig;
+import com.example.demo.enums.ActivityKey;
+import com.example.demo.model.ActivityMasterModel;
+import com.example.demo.model.RewardRecordModel;
+import com.example.demo.model.UserModel;
 import com.example.demo.repository.ActivityMasterRepository;
 import com.example.demo.repository.RewardRecordRepository;
 import com.example.demo.repository.UserRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import lombok.RequiredArgsConstructor;
 
@@ -27,10 +36,13 @@ public class MissionService {
 	private final UserRepository userRepository;
 	private final ActivityMasterRepository activityMasterRepository;
 	private final RewardRecordRepository rewardRecordRepository;
+	private final ObjectMapper objectMapper;
+	private final UserCacheService userCacheService;
 
-	private static final String ACTIVITY_KEY = "NEW_USER_MISSION";
+	private static final ActivityKey DEFAULT_ACTIVITY = ActivityKey.NEW_USER_MISSION;
+	private static final String CACHE_ACTIVITY_PREFIX = "config:activity:";
 
-	// 檢查任務是否過期
+	// Check if the mission has expired
 	private boolean isMissionExpired(Long userId) {
 		String cacheKey = "mission:user:" + userId + ":expired";
 		String cachedExpired = redisTemplate.opsForValue().get(cacheKey);
@@ -40,17 +52,60 @@ public class MissionService {
 		if ("false".equals(cachedExpired))
 			return false;
 
-		User user = userRepository.findById(userId).orElseThrow();
-		ActivityMaster activity = activityMasterRepository.findByActivityKey(ACTIVITY_KEY).orElseThrow();
+		UserModel user = userCacheService.getUser(userId);
+		ActivityMasterModel activity = getActivityConfig(DEFAULT_ACTIVITY.getKey());
 
-		long daysPass = ChronoUnit.DAYS.between(user.getCreatedAt(), java.time.LocalDateTime.now());
+		long daysPass = ChronoUnit.DAYS.between(user.getCreatedAt(), LocalDateTime.now());
 		boolean expired = daysPass >= activity.getDaysLimit();
 
-		redisTemplate.opsForValue().set(cacheKey, String.valueOf(expired), 1, java.util.concurrent.TimeUnit.HOURS);
+		redisTemplate.opsForValue().set(cacheKey, String.valueOf(expired), 1, TimeUnit.HOURS);
 		return expired;
 	}
 
-	// 記錄登入天數 (Mission 1)
+	// Get activity configuration (cache first: L1 Caffeine -> L2 Redis)
+	@Cacheable(value = "activities", key = "#activityKey")
+	public ActivityMasterModel getActivityConfig(String activityKey) {
+		return getActivityConfigByRedis(activityKey);
+	}
+
+	// Get activity configuration directly from Redis/DB (Skip L1 Cache for safety check)
+	public ActivityMasterModel getActivityConfigByRedis(String activityKey) {
+		String cacheKey = CACHE_ACTIVITY_PREFIX + activityKey;
+		String cachedJson = redisTemplate.opsForValue().get(cacheKey);
+
+		if (cachedJson != null) {
+			try {
+				return objectMapper.readValue(cachedJson, ActivityMasterModel.class);
+			} catch (JsonProcessingException e) {
+				log.error("Failed to deserialize activity cache for key: " + activityKey, e);
+			}
+		}
+
+		ActivityMasterModel activity = activityMasterRepository.findByActivityKey(activityKey).orElseThrow();
+
+		try {
+			String json = objectMapper.writeValueAsString(activity);
+			redisTemplate.opsForValue().set(cacheKey, json, 24, java.util.concurrent.TimeUnit.HOURS);
+		} catch (JsonProcessingException e) {
+			log.error("Failed to serialize activity for cache: " + activityKey, e);
+		}
+
+		return activity;
+	}
+
+	// Refresh cache (Redis L2 + Sync other L1s)
+	@CacheEvict(value = "activities", key = "#activityKey")
+	public void refreshActivityCache(String activityKey) {
+		// 1. Clear Redis L2
+		redisTemplate.delete(CACHE_ACTIVITY_PREFIX + activityKey);
+
+		// 2. Broadcast refresh message to other instances
+		redisTemplate.convertAndSend(RedisPubSubConfig.ACTIVITY_CACHE_TOPIC, activityKey);
+
+		log.info("Activity cache refreshed and sync message sent for: {}", activityKey);
+	}
+
+	// Record login days (Mission 1)
 	public void recordLogin(Long userId, LocalDate loginDate) {
 		if (isMissionExpired(userId)) {
 			log.info("User {} mission expired, login not recorded.", userId);
@@ -83,10 +138,10 @@ public class MissionService {
 		redisTemplate.opsForHash().put(key, "login_days", String.valueOf(consecutiveDays));
 
 		log.info("User {} login recorded. Consecutive days: {}", userId, consecutiveDays);
-		checkAllMissionsAndReward(userId);
+		checkAllMissionsAndReward(userId, DEFAULT_ACTIVITY);
 	}
 
-	// 記錄遊戲啟動 (Mission 2)
+	// Record game launch (Mission 2)
 	public void recordLaunch(Long userId, Long gameId) {
 		if (isMissionExpired(userId))
 			return;
@@ -97,10 +152,10 @@ public class MissionService {
 		Long distinctGamesCount = redisTemplate.opsForSet().size(setKey);
 		log.info("User {} launched game {}. Total distinct games launched: {}", userId, gameId, distinctGamesCount);
 
-		checkAllMissionsAndReward(userId);
+		checkAllMissionsAndReward(userId, DEFAULT_ACTIVITY);
 	}
 
-	// 記錄遊戲遊玩次數與積分 (Mission 3)
+	// Record game play sessions and score (Mission 3)
 	public void recordPlay(Long userId, Long gameId, Integer score) {
 		if (isMissionExpired(userId))
 			return;
@@ -112,27 +167,28 @@ public class MissionService {
 		log.info("User {} played game {} with score {}. Total sessions: {}, Total score: {}", userId, gameId, score,
 				sessions, totalScore);
 
-		checkAllMissionsAndReward(userId);
+		checkAllMissionsAndReward(userId, DEFAULT_ACTIVITY);
 	}
 
-	// 統一的發獎邏輯
+	// Unified rewarding logic
 	@Transactional
-	public void checkAllMissionsAndReward(Long userId) {
+	public void checkAllMissionsAndReward(Long userId, ActivityKey activityKey) {
 		String key = "mission:user:" + userId;
 
-		// 1. 優先檢查資料庫領獎紀錄
-		ActivityMaster activity = activityMasterRepository.findByActivityKey(ACTIVITY_KEY).orElseThrow();
+		// 1. Check reward record in database first
+		// Safety check: skip L1 cache and go to Redis/DB directly
+		ActivityMasterModel activity = getActivityConfigByRedis(activityKey.getKey());
 		if (rewardRecordRepository.findByUserIdAndActivityId(userId, activity.getId()).isPresent()) {
 			return;
 		}
 
-		// 2. 檢查 Redis 快取 (作為第一層過濾)
+		// 2. Check Redis cache (as first layer filtering)
 		String claimed = (String) redisTemplate.opsForHash().get(key, "reward_claimed");
 		if ("1".equals(claimed)) {
 			return;
 		}
 
-		// 抓出所有進度
+		// Fetch all progress
 		var missions = activity.getMissions();
 		String loginDaysStr = (String) redisTemplate.opsForHash().get(key, "login_days");
 		int loginDays = loginDaysStr != null ? Integer.parseInt(loginDaysStr) : 0;
@@ -147,14 +203,14 @@ public class MissionService {
 		String totalScoreStr = (String) redisTemplate.opsForHash().get(key, "total_score");
 		int totalScore = totalScoreStr != null ? Integer.parseInt(totalScoreStr) : 0;
 
-		// 3. 動態判斷是否達標
+		// 3. Dynamically determine if targets are met
 		boolean allDone = true;
 		for (var m : missions) {
 			boolean currentDone = false;
-			switch (m.getMissionOrder()) {
-			case 1 -> currentDone = loginDays >= m.getTargetCount();
-			case 2 -> currentDone = launchedGames >= m.getTargetCount();
-			case 3 -> currentDone = (sessions >= m.getTargetCount() && totalScore > m.getTargetScore());
+			switch (m.getMissionType()) {
+			case LOGIN -> currentDone = loginDays >= m.getTargetCount();
+			case GAME_LAUNCH -> currentDone = launchedGames >= m.getTargetCount();
+			case GAME_PLAY -> currentDone = (sessions >= m.getTargetCount() && totalScore > m.getTargetScore());
 			}
 			if (!currentDone) {
 				allDone = false;
@@ -163,20 +219,28 @@ public class MissionService {
 		}
 
 		if (allDone) {
-			log.info("🎉 User {} completed ALL MISSIONS! Awarding {} points.", userId, activity.getTotalReward());
+			log.info("User {} completed ALL MISSIONS! Awarding {} points.", userId, activity.getTotalReward());
 
-			// 4. 更新使用者分數
-			User user = userRepository.findById(userId).orElseThrow();
-			user.setTotalPoints(user.getTotalPoints() + activity.getTotalReward());
-			userRepository.save(user);
+			// 4. Update user points
+			UserModel user = userRepository.findById(userId).orElseThrow();
+			updateUserPoints(user, activity.getTotalReward());
 
-			// 5. 寫入領獎紀錄 (持久化)
-			com.example.demo.entity.RewardRecord record = com.example.demo.entity.RewardRecord.builder().userId(userId)
+			// 5. Write reward record (persistence)
+			RewardRecordModel record = RewardRecordModel.builder().userId(userId)
 					.activityId(activity.getId()).rewardPoints(activity.getTotalReward()).build();
 			rewardRecordRepository.save(record);
 
-			// 6. 更新 Redis 標記
+			// 6. Update Redis flag
 			redisTemplate.opsForHash().put(key, "reward_claimed", "1");
 		}
+	}
+	// Update user points and evict cache
+	@Transactional
+	public void updateUserPoints(UserModel user, int rewardPoints) {
+		user.setTotalPoints(user.getTotalPoints() + rewardPoints);
+		userRepository.save(user);
+
+		// Evict Cache via UserCacheService
+		userCacheService.evictUser(user.getId());
 	}
 }

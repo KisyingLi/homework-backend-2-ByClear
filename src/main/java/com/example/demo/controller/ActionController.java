@@ -2,6 +2,7 @@ package com.example.demo.controller;
 
 import java.time.LocalDate;
 import java.util.Map;
+import java.util.UUID;
 
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -13,21 +14,22 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.tags.Tag;
 import com.example.demo.dto.LaunchGameRequest;
 import com.example.demo.dto.LoginRequest;
 import com.example.demo.dto.PlayGameRequest;
-import com.example.demo.entity.GamePlayRecord;
-import com.example.demo.entity.User;
 import com.example.demo.event.GameLaunchEvent;
 import com.example.demo.event.GamePlayEvent;
 import com.example.demo.event.UserLoginEvent;
+import com.example.demo.model.GamePlayRecordModel;
+import com.example.demo.model.UserModel;
 import com.example.demo.repository.GamePlayRecordRepository;
 import com.example.demo.repository.GameRepository;
 import com.example.demo.repository.UserRepository;
 import com.example.demo.service.AuthService;
+import com.example.demo.service.UserCacheService;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -35,7 +37,7 @@ import lombok.extern.slf4j.Slf4j;
 @RequestMapping("/api")
 @RequiredArgsConstructor
 @Slf4j
-@Tag(name = "行為控制", description = "處理用戶登入、啟動遊戲與遊玩行為的相關 API，並發送非同步 MQ 事件")
+@Tag(name = "Behavior Control", description = "APIs for handling user login, game launch, and play behavior, sending asynchronous MQ events")
 public class ActionController {
 
 	private final UserRepository userRepository;
@@ -44,28 +46,31 @@ public class ActionController {
 	private final GameRepository gameRepository;
 	private final GamePlayRecordRepository gamePlayRecordRepository;
 	private final AuthService authService;
+	private final UserCacheService userCacheService;
 
 	@PostMapping("/login")
 	@Transactional
-	@Operation(summary = "用戶登入/註冊", description = "模擬用戶登入。若用戶不存在則自動建立，成功後發送 LOGIN 事件並回傳 Token")
+	@Operation(summary = "User Login/Registration", description = "Simulates user login. Automatically creates a user if they don't exist, sends a LOGIN event upon success, and returns a token")
 	public ResponseEntity<?> login(@RequestBody LoginRequest request) {
 		String username = request.username();
 		if (username == null || username.trim().isEmpty()) {
 			return ResponseEntity.badRequest().body(Map.of("error", "Username cannot be empty"));
 		}
 
-		// 若使用者不存在，則自動新建一個使用者 (模擬自動註冊的便捷設計)
-		User user = userRepository.findByUsername(username).orElseGet(() -> {
+		// Automatically create a new user if they don't exist
+		UserModel user = userCacheService.getByUsername(username).orElseGet(() -> {
 			log.info("Creating new user: {}", username);
-			User newUser = User.builder().username(username).build();
-			return userRepository.save(newUser);
+			UserModel newUser = UserModel.builder().username(username).build();
+			UserModel saved = userRepository.save(newUser);
+			userCacheService.cacheUserObject(saved); // Cache the newly created user
+			return saved;
 		});
 
-		// 建立並發送非同步 MQ 事件，用於任務系統結算
+		// Create and send asynchronous MQ event for mission settlement
 		UserLoginEvent event = new UserLoginEvent(user.getId(), LocalDate.now());
 		rocketMQTemplate.convertAndSend("MISSION_TOPIC:LOGIN", event);
 
-		// 產生 Token 並存入 Redis (設定 24 小時過期)
+		// Generate Token and store in Redis (set to expire in 24 hours)
 		String token = java.util.UUID.randomUUID().toString();
 		redisTemplate.opsForValue().set("auth:token:" + token, String.valueOf(user.getId()),
 				java.time.Duration.ofHours(24));
@@ -78,7 +83,7 @@ public class ActionController {
 
 	@PostMapping("/launchGame")
 	@Transactional
-	@Operation(summary = "啟動遊戲", description = "需攜帶 Token。驗證遊戲存在後發送 LAUNCH 事件，並回傳用於遊玩的 playToken")
+	@Operation(summary = "Launch Game", description = "Requires Token. Verifies game existence, sends a LAUNCH event, and returns a playToken for gaming")
 	public ResponseEntity<?> launchGame(@RequestHeader(value = "Authorization", required = false) String token,
 			@RequestBody LaunchGameRequest request) {
 		Long userId = authService.getUserIdFromToken(token);
@@ -91,15 +96,15 @@ public class ActionController {
 			return ResponseEntity.badRequest().body(Map.of("error", "GameId is required"));
 		}
 
-		// 確認遊戲是否存在，依照正常流程，查無遊戲即回傳錯誤
+		// Check if game exists; return error if not found
 		if (!gameRepository.existsById(gameId)) {
 			return ResponseEntity.badRequest().body(Map.of("error", "Game not found"));
 		}
 
-		// 產生 Play Token (過期時間 30 分鐘)
-		String playToken = java.util.UUID.randomUUID().toString();
+		// Generate Play Token (expires in 30 minutes)
+		String playToken = UUID.randomUUID().toString();
 		String sessionKey = "play:session:" + playToken;
-		// 綁定 userId 與 gameId 放入 Redis
+		// Bind userId and gameId in Redis
 		redisTemplate.opsForValue().set(sessionKey, userId + ":" + gameId, java.time.Duration.ofMinutes(30));
 
 		// 發送 MQ 事件
@@ -112,7 +117,7 @@ public class ActionController {
 
 	@PostMapping("/play")
 	@Transactional
-	@Operation(summary = "紀錄遊玩結果", description = "需攜帶 Token 與 PlayToken。驗證 Token 擁有者一致後，隨機產生積分並發送 PLAY 事件")
+	@Operation(summary = "Record Play Results", description = "Requires Token and PlayToken. Verifies token ownership, randomly generates score, and sends a PLAY event")
 	public ResponseEntity<?> play(@RequestHeader(value = "Authorization", required = false) String token,
 			@RequestBody PlayGameRequest request) {
 		Long authUserId = authService.getUserIdFromToken(token);
@@ -132,27 +137,28 @@ public class ActionController {
 			return ResponseEntity.status(401).body(Map.of("error", "Unauthorized: Play session expired or invalid"));
 		}
 
-		// 解析 userId 與 gameId
+		// Parse userId and gameId
 		String[] parts = sessionValue.split(":");
 		Long sessionUserId = Long.parseLong(parts[0]);
 		Long gameId = Long.parseLong(parts[1]);
 
-		// 確保打 /play 的人跟 launchGame 的人是同一個
+		// Ensure the person calling /play is the same person who called launchGame
 		if (!authUserId.equals(sessionUserId)) {
 			return ResponseEntity.status(403).body(Map.of("error", "Forbidden: Session owner mismatch"));
 		}
 
-		// 刷新 Redis 的過期時間 (再給 30 分鐘)
+		// Refresh Redis expiration time (another 30 minutes)
 		redisTemplate.expire(sessionKey, java.time.Duration.ofMinutes(30));
 
-		// 後端自動產生隨機分數 (這裡設定為 50 ~ 500 分)
+		// Backend automatically generates random score (here set to 50 ~ 500 points)
 		int score = new java.util.Random().nextInt(451) + 50;
 
-		// 寫入遊玩紀錄
-		GamePlayRecord record = GamePlayRecord.builder().userId(authUserId).gameId(gameId).score(score).build();
+		// Write play record
+		GamePlayRecordModel record = GamePlayRecordModel.builder().userId(authUserId).gameId(gameId).score(score)
+				.build();
 		gamePlayRecordRepository.save(record);
 
-		// 發送 MQ 事件
+		// Send MQ event
 		GamePlayEvent event = new GamePlayEvent(authUserId, gameId, score, LocalDate.now());
 		rocketMQTemplate.convertAndSend("MISSION_TOPIC:PLAY", event);
 

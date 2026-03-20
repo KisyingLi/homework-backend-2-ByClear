@@ -1,4 +1,4 @@
-package com.example.demo.consumer;
+package com.example.demo.mq;
 
 import com.example.demo.event.UserLoginEvent;
 import com.example.demo.service.MissionService;
@@ -26,7 +26,7 @@ public class MissionEventConsumer implements RocketMQListener<UserLoginEvent> {
 
     @Override
     public void onMessage(UserLoginEvent event) {
-        log.info("MQ Consumer 成功接收到登入事件！UserId={}, LoginDate={}", event.userId(), event.loginDate());
+        log.info("MQ Consumer successfully received login event! UserId={}, LoginDate={}", event.userId(), event.loginDate());
         missionService.recordLogin(event.userId(), event.loginDate());
     }
 }
