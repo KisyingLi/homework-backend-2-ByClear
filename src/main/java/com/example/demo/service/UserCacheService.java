@@ -5,13 +5,11 @@ import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import com.example.demo.helper.RedisHelper;
 import com.example.demo.model.UserModel;
 import com.example.demo.repository.UserRepository;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
 import lombok.RequiredArgsConstructor;
 
@@ -21,22 +19,17 @@ public class UserCacheService {
 
 	private static final Logger log = LoggerFactory.getLogger(UserCacheService.class);
 
-	private final StringRedisTemplate redisTemplate;
+	private final RedisHelper redis;
 	private final UserRepository userRepository;
-	private final ObjectMapper objectMapper;
-
-	private static final String CACHE_USER_PREFIX = "cache:user:";
-	private static final String CACHE_USERNAME_PREFIX = "cache:username:";
 
 	/**
 	 * Get user from cache or DB (Look-aside pattern)
 	 */
 	public UserModel getUser(Long userId) {
-		String cacheKey = CACHE_USER_PREFIX + userId;
-		UserModel user = getFromCache(cacheKey);
-		if (user != null) return user;
+		UserModel cached = redis.getAsJson(redis.cacheUserKey(userId), UserModel.class);
+		if (cached != null) return cached;
 
-		user = userRepository.findById(userId).orElseThrow();
+		UserModel user = userRepository.findById(userId).orElseThrow();
 		cacheUserObject(user);
 		return user;
 	}
@@ -45,8 +38,7 @@ public class UserCacheService {
 	 * Get user by username with cache
 	 */
 	public Optional<UserModel> getByUsername(String username) {
-		String nameKey = CACHE_USERNAME_PREFIX + username;
-		String userIdStr = redisTemplate.opsForValue().get(nameKey);
+		String userIdStr = redis.get(redis.cacheUsernameKey(username));
 
 		if (userIdStr != null) {
 			return Optional.of(getUser(Long.parseLong(userIdStr)));
@@ -58,27 +50,11 @@ public class UserCacheService {
 	}
 
 	/**
-	 * Helper to cache user object in both ID and Username mappings
+	 * Cache user object in both ID and Username mappings
 	 */
 	public void cacheUserObject(UserModel user) {
-		try {
-			String json = objectMapper.writeValueAsString(user);
-			redisTemplate.opsForValue().set(CACHE_USER_PREFIX + user.getId(), json, 1, TimeUnit.HOURS);
-			redisTemplate.opsForValue().set(CACHE_USERNAME_PREFIX + user.getUsername(), String.valueOf(user.getId()), 1, TimeUnit.HOURS);
-		} catch (JsonProcessingException e) {
-			log.error("Failed to serialize user for cache: " + user.getId(), e);
-		}
-	}
-
-	private UserModel getFromCache(String key) {
-		String json = redisTemplate.opsForValue().get(key);
-		if (json == null) return null;
-		try {
-			return objectMapper.readValue(json, UserModel.class);
-		} catch (JsonProcessingException e) {
-			log.error("Failed to deserialize user cache for key: " + key, e);
-			return null;
-		}
+		redis.setAsJson(redis.cacheUserKey(user.getId()), user, 1, TimeUnit.HOURS);
+		redis.set(redis.cacheUsernameKey(user.getUsername()), String.valueOf(user.getId()), 1, TimeUnit.HOURS);
 	}
 
 	/**
@@ -86,9 +62,9 @@ public class UserCacheService {
 	 */
 	public void evictUser(Long userId) {
 		UserModel user = userRepository.findById(userId).orElse(null);
-		redisTemplate.delete(CACHE_USER_PREFIX + userId);
+		redis.delete(redis.cacheUserKey(userId));
 		if (user != null) {
-			redisTemplate.delete(CACHE_USERNAME_PREFIX + user.getUsername());
+			redis.delete(redis.cacheUsernameKey(user.getUsername()));
 		}
 		log.debug("Evicted user cache for: {}", userId);
 	}

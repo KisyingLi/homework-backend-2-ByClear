@@ -1,7 +1,8 @@
 package com.example.demo.service;
 
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+
+import com.example.demo.helper.RedisHelper;
 
 import lombok.RequiredArgsConstructor;
 
@@ -9,7 +10,7 @@ import lombok.RequiredArgsConstructor;
 @RequiredArgsConstructor
 public class AuthService {
 
-	private final StringRedisTemplate redisTemplate;
+	private final RedisHelper redis;
 
 	public Long getUserIdFromToken(String token) {
 		if (token == null || token.trim().isEmpty())
@@ -17,10 +18,7 @@ public class AuthService {
 		if (token.startsWith("Bearer ")) {
 			token = token.substring(7);
 		}
-		String userIdStr = redisTemplate.opsForValue().get("auth:token:" + token);
-		if (userIdStr != null) {
-			return Long.parseLong(userIdStr);
-		}
-		return null;
+		String userIdStr = redis.get(redis.authTokenKey(token));
+		return userIdStr != null ? Long.parseLong(userIdStr) : null;
 	}
 }

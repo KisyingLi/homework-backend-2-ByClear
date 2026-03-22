@@ -55,6 +55,22 @@ CREATE TABLE IF NOT EXISTS `reward_records` (
     UNIQUE KEY `uk_user_activity` (`user_id`, `activity_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 7. User Login Record Table
+CREATE TABLE IF NOT EXISTS `user_login_record` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `user_id` BIGINT NOT NULL,
+    `login_date` DATE NOT NULL,
+    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 8. Game Launch Record Table
+CREATE TABLE IF NOT EXISTS `game_launch_record` (
+    `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+    `user_id` BIGINT NOT NULL,
+    `game_id` BIGINT NOT NULL,
+    `launched_at` DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- Initialize base data
 INSERT IGNORE INTO `games` (id, name) VALUES 
 (1, '星際冒險'), (2, '超級瑪嘉'), (3, '連連看'), (4, '俄羅斯方塊'), (5, '撲克大賽');

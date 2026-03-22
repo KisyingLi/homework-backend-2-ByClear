@@ -1,9 +1,13 @@
 package com.example.demo.controller;
 
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -13,10 +17,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.test.context.bean.override.mockito.MockitoBean;
-import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.core.ValueOperations;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.example.demo.dto.LaunchGameRequest;
@@ -25,6 +27,7 @@ import com.example.demo.dto.PlayGameRequest;
 import com.example.demo.event.GameLaunchEvent;
 import com.example.demo.event.GamePlayEvent;
 import com.example.demo.event.UserLoginEvent;
+import com.example.demo.helper.RedisHelper;
 import com.example.demo.model.UserModel;
 import com.example.demo.repository.GamePlayRecordRepository;
 import com.example.demo.repository.GameRepository;
@@ -49,7 +52,7 @@ class ActionControllerTest {
     private RocketMQTemplate rocketMQTemplate;
 
     @MockitoBean
-    private StringRedisTemplate redisTemplate;
+    private RedisHelper redis;
 
     @MockitoBean
     private GameRepository gameRepository;
@@ -62,9 +65,6 @@ class ActionControllerTest {
 
     @MockitoBean
     private UserCacheService userCacheService;
-
-    @MockitoBean
-    private ValueOperations<String, String> valueOperations;
 
     private UserModel testUser;
 
@@ -90,7 +90,6 @@ class ActionControllerTest {
         
         when(userCacheService.getByUsername("testuser")).thenReturn(Optional.empty());
         when(userRepository.save(any(UserModel.class))).thenReturn(testUser);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
         mockMvc.perform(post("/api/login")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -118,7 +117,6 @@ class ActionControllerTest {
 
         when(authService.getUserIdFromToken(token)).thenReturn(1L);
         when(gameRepository.existsById(1L)).thenReturn(true);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
         mockMvc.perform(post("/api/launchGame")
                 .header("Authorization", token)
@@ -145,8 +143,8 @@ class ActionControllerTest {
         PlayGameRequest request = new PlayGameRequest(playToken);
 
         when(authService.getUserIdFromToken(token)).thenReturn(1L);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get("play:session:" + playToken)).thenReturn("1:1"); // userId:gameId
+        when(redis.playSessionKey(playToken)).thenReturn("play:session:" + playToken);
+        when(redis.get("play:session:" + playToken)).thenReturn("1:1"); // userId:gameId
 
         mockMvc.perform(post("/api/play")
                 .header("Authorization", token)
@@ -173,8 +171,8 @@ class ActionControllerTest {
         PlayGameRequest request = new PlayGameRequest(playToken);
 
         when(authService.getUserIdFromToken(token)).thenReturn(2L); // Attacker's ID
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get("play:session:" + playToken)).thenReturn("1:1"); // Original owner ID is 1
+        when(redis.playSessionKey(playToken)).thenReturn("play:session:" + playToken);
+        when(redis.get("play:session:" + playToken)).thenReturn("1:1"); // Original owner ID is 1
 
         mockMvc.perform(post("/api/play")
                 .header("Authorization", token)
@@ -194,7 +192,6 @@ class ActionControllerTest {
         LoginRequest request = new LoginRequest("testuser");
 
         when(userCacheService.getByUsername("testuser")).thenReturn(Optional.of(testUser));
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
         mockMvc.perform(post("/api/login")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -262,8 +259,8 @@ class ActionControllerTest {
         PlayGameRequest request = new PlayGameRequest(expiredPlayToken);
 
         when(authService.getUserIdFromToken(token)).thenReturn(1L);
-        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get("play:session:" + expiredPlayToken)).thenReturn(null); // Session expired
+        when(redis.playSessionKey(expiredPlayToken)).thenReturn("play:session:" + expiredPlayToken);
+        when(redis.get("play:session:" + expiredPlayToken)).thenReturn(null); // Session expired
 
         mockMvc.perform(post("/api/play")
                 .header("Authorization", token)
